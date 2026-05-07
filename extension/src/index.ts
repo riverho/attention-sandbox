@@ -322,14 +322,29 @@ function createSandboxExtension(pi: any) {
   }
 
   const mode = mapLoaded ? "loaded from file" : autoCreated ? "auto-created" : "default";
-  console.log(`[sandbox] Map ${mode}:`);
+  
+  // Build startup notification
+  const startupLines = [
+    `[sandbox] Map ${mode}`,
+  ];
   if (projectRoot && projectRoot !== cwd) {
-    console.log(`[sandbox] Project root detected: ${projectRoot}`);
+    startupLines.push(`[sandbox] Project root detected: ${projectRoot}`);
   }
   if (autoCreated) {
-    console.log(`[sandbox] Created .pi/sandbox-map.yaml — edit it or use !MAP to customize`);
+    startupLines.push(`[sandbox] Created .pi/sandbox-map.yaml — edit it or use !MAP to customize`);
   }
-  console.log(map.toSummary());
+  startupLines.push(map.toSummary());
+  
+  const startupMsg = startupLines.join("\n");
+  
+  // Log to terminal (for debugging)
+  console.log(startupMsg);
+  
+  // Send to Pi chat UI so user actually sees it
+  pi.sendMessage({
+    type: "text",
+    content: "🛡️ **Attention Sandbox**\n```\n" + startupMsg + "\n```",
+  });
 
   // ── Inject Agent Context ──────────────────────────────────────────────
   // Tell the agent about sandbox boundaries at startup
@@ -446,9 +461,17 @@ function createSandboxExtension(pi: any) {
           isError: true,
         });
 
+        // Notify user — always show in chat, fallback if pi.notify unavailable
+        const notifyMsg = `🔒 **Sandbox Stop**: agent tried **${toolName}** on \`${p}\`\n\nUse \`!MAP ${p} -> allow:rw\` to grant access, or \`!STATUS\` to see current map.`;
+        
         if (pi.notify) {
-          pi.notify(`🔒 Stopped: agent tried ${toolName} on ${p}`);
+          pi.notify(`🔒 Stopped: ${toolName} on ${p}`);
         }
+        
+        pi.sendMessage({
+          type: "text",
+          content: notifyMsg,
+        });
 
         // Log to .wenmei/journal
         try {
