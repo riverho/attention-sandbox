@@ -1,0 +1,28 @@
+# Attention Sandbox
+# https://github.com/riverho/attention-sandbox
+
+# Local runtime files
+.wenmei/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Don't ignore .pi/ — that's the agent config
+!.pi/

@@ -1,0 +1,34 @@
+name: attention-sandbox
+version: 1.0.0
+description: |
+  Minimal folder sandbox for Pi. 
+  Uses !MAP to define which folders the agent can touch.
+  Everything else is stopped with a friendly note.
+  
+  No HIL. No pause. No resume. Just stop + explain + suggest.
+  
+  To expand: edit .pi/sandbox-map.yaml or type !MAP <path> -> allow:rw
+
+# Default map: auto-generated on first run
+# Edit this file or use !MAP commands in chat
+
+map:
+  /Users/river/.openclaw/workspace/projects/attention-sandbox:
+    perm: allow:rw
+    note: "Working directory"
+
+  /Users/river/.openclaw/workspace:
+    perm: allow:ro
+    note: "Parent workspace read-only"
+
+  /Users/river/.ssh:
+    perm: deny
+    note: "Never"
+
+  /Users/river/Desktop:
+    perm: ask:rw
+    note: "Desktop -- logged but allowed"
+
+  /:
+    perm: deny
+    note: "Everything else blocked"

@@ -1,0 +1,430 @@
+/**
+ * Attention Sandbox Extension for Pi
+ * 
+ * Minimal folder sandbox. Just a stopper + commands.
+ * 
+ * AGENTS: Read this so you know your boundaries. Work WITH the sandbox,
+ * not against it. When you need access outside mapped zones, ask the user
+ * to expand the map BEFORE trying to access.
+ * 
+ * USERS: Type !MAP, !STATUS, or !SANDBOX to manage your boundaries.
+ */
+
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as yaml from "js-yaml";
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+type Permission = "allow:rw" | "allow:ro" | "deny" | "ask:rw" | "ask:ro";
+
+interface MapRule {
+  path: string;
+  perm: Permission;
+  note?: string;
+}
+
+interface SandboxMap {
+  map: Record<string, { perm: Permission; note?: string }>;
+}
+
+// ── Path Safety ────────────────────────────────────────────────────────────
+
+function normalizePath(p: string, cwd: string): string {
+  p = p.replace(/^~\//, `${process.env.HOME || "/"}/`);
+  p = p.replace(/^~$/, process.env.HOME || "/");
+  if (!path.isAbsolute(p)) {
+    p = path.resolve(cwd, p);
+  }
+  return path.resolve(p);
+}
+
+function isPathInside(root: string, target: string): boolean {
+  const rootSep = root.endsWith(path.sep) ? root : root + path.sep;
+  const rel = path.relative(rootSep, target);
+  return !rel.startsWith("..") && rel !== "";
+}
+
+// ── !MAP Engine ────────────────────────────────────────────────────────────
+
+class FolderMap {
+  private rules: MapRule[] = [];
+  private cwd: string;
+  private mapFile: string | null = null;
+
+  constructor(cwd: string) {
+    this.cwd = cwd;
+  }
+
+  loadFromYaml(filePath: string): boolean {
+    try {
+      const content = fs.readFileSync(filePath, "utf-8");
+      const parsed = yaml.load(content) as SandboxMap;
+      if (!parsed || !parsed.map) return false;
+
+      this.rules = Object.entries(parsed.map).map(([rawPath, cfg]) => ({
+        path: normalizePath(rawPath, this.cwd),
+        perm: cfg.perm,
+        note: cfg.note || "",
+      }));
+
+      this.rules.sort((a, b) => b.path.length - a.path.length);
+      this.mapFile = filePath;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  check(target: string, operation: "read" | "write" = "read"): MapRule | null {
+    const resolved = normalizePath(target, this.cwd);
+
+    for (const rule of this.rules) {
+      if (isPathInside(rule.path, resolved) || resolved === rule.path) {
+        if (operation === "write" && (rule.perm === "allow:ro" || rule.perm === "ask:ro")) {
+          return { path: rule.path, perm: "deny", note: `Write denied: ${rule.note}` };
+        }
+        return rule;
+      }
+    }
+    return null;
+  }
+
+  isMapped(target: string, operation: "read" | "write" = "read"): boolean {
+    const rule = this.check(target, operation);
+    return rule !== null && rule.perm !== "deny";
+  }
+
+  addRule(rawPath: string, perm: Permission, note: string = ""): void {
+    const resolved = normalizePath(rawPath, this.cwd);
+    // Remove existing rule at same path
+    this.rules = this.rules.filter(r => r.path !== resolved);
+    this.rules.push({ path: resolved, perm, note });
+    this.rules.sort((a, b) => b.path.length - a.path.length);
+  }
+
+  removeRule(rawPath: string): boolean {
+    const resolved = normalizePath(rawPath, this.cwd);
+    const before = this.rules.length;
+    this.rules = this.rules.filter(r => r.path !== resolved);
+    return this.rules.length < before;
+  }
+
+  getMappedPaths(): string[] {
+    return this.rules
+      .filter(r => r.perm.startsWith("allow") || r.perm.startsWith("ask"))
+      .map(r => r.path);
+  }
+
+  getAllowPaths(): string[] {
+    return this.rules
+      .filter(r => r.perm === "allow:rw" || r.perm === "allow:ro")
+      .map(r => r.path);
+  }
+
+  toSummary(): string {
+    return this.rules.map(r => {
+      const icon = r.perm.startsWith("allow:rw") ? "🟢" 
+        : r.perm.startsWith("allow:ro") ? "🟡"
+        : r.perm === "deny" ? "🔴"
+        : "🔵";
+      return `${icon} ${r.path} -> ${r.perm}${r.note ? ` (${r.note})` : ""}`;
+    }).join("\n");
+  }
+
+  save(): boolean {
+    if (!this.mapFile) return false;
+    const mapData: SandboxMap = { map: {} };
+    for (const rule of this.rules) {
+      mapData.map[rule.path] = { perm: rule.perm, note: rule.note };
+    }
+    try {
+      fs.writeFileSync(this.mapFile, yaml.dump(mapData), "utf-8");
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// ── Path Extraction ──────────────────────────────────────────────────────
+
+function extractPaths(toolName: string, args: Record<string, unknown>): Array<{ path: string; op: "read" | "write" }> {
+  const paths: Array<{ path: string; op: "read" | "write" }> = [];
+
+  if (toolName === "read" || toolName === "edit") {
+    if (typeof args.path === "string") {
+      paths.push({ path: args.path, op: toolName === "edit" ? "write" : "read" });
+    }
+  } else if (toolName === "write") {
+    if (typeof args.path === "string") {
+      paths.push({ path: args.path, op: "write" });
+    }
+  } else if (toolName === "bash") {
+    const cmd = String(args.command || "");
+    const pathMatches = cmd.match(/(?:^|\s)([~./]?\/[^\s;|&<>\"'`]+)/g) || [];
+    for (const m of pathMatches) {
+      const p = m.trim();
+      if (p && !p.startsWith("-") && !p.startsWith("//")) {
+        paths.push({ path: p, op: "read" });
+      }
+    }
+  }
+
+  return paths;
+}
+
+// ── Error Formatting ───────────────────────────────────────────────────────
+
+function formatStopError(toolName: string, blockedPath: string, map: FolderMap): string {
+  const mapped = map.getAllowPaths();
+  const mappedList = mapped.length > 0 
+    ? mapped.join("\n    ") 
+    : "(none configured)";
+
+  return [
+    "",
+    "🔒 SANDBOX STOP",
+    "",
+    `The agent tried to ${toolName} outside the mapped sandbox:`,
+    `  ${blockedPath}`,
+    "",
+    "Currently allowed paths:",
+    `    ${mappedList}`,
+    "",
+    "To expand the sandbox:",
+    `  !MAP ${blockedPath} -> allow:rw`,
+    "",
+    "Or ask the user: \"Should I add ${blockedPath} to the sandbox?\"",
+    "",
+  ].join("\n");
+}
+
+function formatAgentContext(map: FolderMap): string {
+  const mapped = map.getAllowPaths();
+  const mappedList = mapped.length > 0 ? mapped.join("\n  ") : "(none - working directory only)";
+
+  return [
+    "",
+    "📋 SANDBOX BOUNDARIES — You are operating inside a !MAP sandbox.",
+    "",
+    "You may freely access these paths:",
+    `  ${mappedList}`,
+    "",
+    "Rules:",
+    "  1. Before accessing paths outside the map, ASK the user to expand.",
+    "  2. Use !MAP <path> -> allow:rw to add paths (user must confirm).",
+    "  3. If you hit a sandbox stop, adapt your plan — do not retry blindly.",
+    "",
+    "Example proactive message:",
+    '  "I need to access ~/Desktop/ to complete this. Should I add it to the sandbox?"',
+    "",
+  ].join("\n");
+}
+
+// ── Extension Factory ──────────────────────────────────────────────────────
+
+function createSandboxExtension(pi: any) {
+  const cwd = pi.cwd || process.cwd();
+  const map = new FolderMap(cwd);
+
+  // ── Load Map ───────────────────────────────────────────────────────────
+  const mapPaths = [
+    path.join(cwd, ".pi", "sandbox-map.yaml"),
+    path.join(cwd, ".agents", "sandbox-map.yaml"),
+    path.join(cwd, "sandbox-map.yaml"),
+    path.join(process.env.HOME || "~", ".pi", "agent", "sandbox-map.yaml"),
+  ];
+
+  let mapLoaded = false;
+  for (const mp of mapPaths) {
+    if (map.loadFromYaml(mp)) {
+      mapLoaded = true;
+      break;
+    }
+  }
+
+  if (!mapLoaded) {
+    map.addRule(cwd, "allow:rw", "Current working directory");
+    map.addRule("/", "deny", "Outside sandbox");
+  }
+
+  console.log(`[sandbox] Map loaded (${mapLoaded ? "from file" : "default"}):`);
+  console.log(map.toSummary());
+
+  // ── Inject Agent Context ──────────────────────────────────────────────
+  // Tell the agent about sandbox boundaries at startup
+  const agentContext = formatAgentContext(map);
+  
+  // Pi extensions can augment system prompt via pi.sendMessage with type "system"
+  // or by emitting a context file event. We'll use the simplest approach:
+  // prepend to the first user-visible message or inject via event.
+  if (pi.injectContext) {
+    pi.injectContext(agentContext);
+  }
+
+  // ── Command Handlers ────────────────────────────────────────────────────
+  pi.onCommand("!MAP", (args: string) => {
+    // Parse: !MAP /path -> allow:rw
+    const match = args.match(/^(.+?)\s*->\s*(\S+)(?:\s+#\s*(.*))?$/);
+    if (!match) {
+      pi.sendMessage({
+        type: "text",
+        content: "Usage: !MAP /path -> allow:rw|allow:ro|deny|ask:rw|ask:ro\nExample: !MAP ~/Desktop -> allow:rw",
+      });
+      return;
+    }
+
+    const [, rawPath, perm, note] = match;
+    if (!["allow:rw", "allow:ro", "deny", "ask:rw", "ask:ro"].includes(perm)) {
+      pi.sendMessage({
+        type: "text",
+        content: `Invalid permission: ${perm}. Use allow:rw, allow:ro, deny, ask:rw, or ask:ro.`,
+      });
+      return;
+    }
+
+    map.addRule(rawPath.trim(), perm as Permission, note || "Added via !MAP");
+    
+    // Try to persist
+    const saved = map.save();
+    
+    pi.sendMessage({
+      type: "text",
+      content: `✅ Mapped: ${normalizePath(rawPath.trim(), cwd)} -> ${perm}${saved ? " (saved)" : " (session only)"}`,
+    });
+    
+    // Update agent context
+    if (pi.injectContext) {
+      pi.injectContext(formatAgentContext(map));
+    }
+  });
+
+  pi.onCommand("!UNMAP", (args: string) => {
+    const removed = map.removeRule(args.trim());
+    if (removed) {
+      map.save();
+      pi.sendMessage({
+        type: "text",
+        content: `🗑️ Removed map for ${normalizePath(args.trim(), cwd)}`,
+      });
+    } else {
+      pi.sendMessage({
+        type: "text",
+        content: `❌ No map found for ${args.trim()}`,
+      });
+    }
+  });
+
+  pi.onCommand("!STATUS", () => {
+    pi.sendMessage({
+      type: "text",
+      content: `📋 Current Sandbox Map:\n\n${map.toSummary()}`,
+    });
+  });
+
+  pi.onCommand("!SANDBOX", () => {
+    pi.sendMessage({
+      type: "text",
+      content: [
+        "🛡️ Attention Sandbox Commands:",
+        "",
+        "  !MAP <path> -> <perm>  — Add or update a path rule",
+        "  !UNMAP <path>          — Remove a path rule",
+        "  !STATUS                — Show current map",
+        "  !SANDBOX               — Show this help",
+        "",
+        "Permissions: allow:rw, allow:ro, deny, ask:rw, ask:ro",
+        "",
+        "Examples:",
+        "  !MAP ~/Desktop -> allow:rw",
+        "  !MAP ~/.ssh -> deny",
+        "  !MAP /tmp -> ask:rw",
+        "  !UNMAP ~/Desktop",
+      ].join("\n"),
+    });
+  });
+
+  // ── Tool Interception ───────────────────────────────────────────────────
+  pi.on("tool_execution_start", (event: any) => {
+    const toolName = event.toolName;
+    const args = event.toolArgs || {};
+
+    const paths = extractPaths(toolName, args);
+    if (paths.length === 0) return;
+
+    for (const { path: p, op } of paths) {
+      const rule = map.check(p, op);
+      
+      if (!rule) {
+        // OUTSIDE MAP — Stop
+        const errorMsg = formatStopError(toolName, p, map);
+        
+        pi.sendMessage({
+          type: "tool_result",
+          toolCallId: event.toolCallId,
+          content: errorMsg,
+          isError: true,
+        });
+
+        if (pi.notify) {
+          pi.notify(`🔒 Stopped: agent tried ${toolName} on ${p}`);
+        }
+
+        // Log to .wenmei/journal
+        try {
+          const journalDir = path.join(cwd, ".wenmei");
+          if (fs.existsSync(journalDir)) {
+            const journalPath = path.join(journalDir, "journal.jsonl");
+            const entry = JSON.stringify({
+              ts: new Date().toISOString(),
+              kind: "sandbox.stop",
+              tool: toolName,
+              path: p,
+              reason: "outside-map",
+            }) + "\n";
+            fs.appendFileSync(journalPath, entry);
+          }
+        } catch {
+          // Best effort
+        }
+
+        return;
+      }
+
+      if (rule.perm === "deny") {
+        // EXPLICIT DENY
+        const errorMsg = [
+          "",
+          "🚫 SANDBOX DENIED",
+          "",
+          `Path ${p} is explicitly denied:`,
+          `  ${rule.path} -> deny`,
+          rule.note ? `  (${rule.note})` : "",
+          "",
+          "This path is permanently blocked. Use a different path.",
+          "",
+        ].join("\n");
+
+        pi.sendMessage({
+          type: "tool_result",
+          toolCallId: event.toolCallId,
+          content: errorMsg,
+          isError: true,
+        });
+        return;
+      }
+
+      // allow:* -> proceed silently
+      // ask:* -> log but allow (user can review later)
+      if (rule.perm.startsWith("ask")) {
+        console.log(`[sandbox] ASK logged: ${toolName} on ${p} (${rule.note})`);
+      }
+    }
+  });
+}
+
+export default createSandboxExtension;
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = createSandboxExtension;
+}

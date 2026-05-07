@@ -1,0 +1,11 @@
+{
+  "name": "attention-sandbox",
+  "description": "Minimal folder sandbox for Pi. Blocks agent from accessing unmapped paths with a friendly note suggesting how to expand the sandbox.",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

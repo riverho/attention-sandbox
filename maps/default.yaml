@@ -1,0 +1,28 @@
+map:
+  /Users/river/projects/attention-sandbox:
+    perm: allow:rw
+    note: "Working directory — free to edit"
+
+  /Users/river/.openclaw/workspace:
+    perm: allow:ro
+    note: "Workspace read-only"
+
+  /Users/river/.ssh:
+    perm: deny
+    note: "Never access SSH keys"
+
+  /Users/river/Desktop:
+    perm: ask:rw
+    note: "Desktop — ask before changing"
+
+  /Users/river/Downloads:
+    perm: ask:ro
+    note: "Downloads — ask before reading"
+
+  /tmp:
+    perm: allow:rw
+    note: "Temp directory is fine"
+
+  /:
+    perm: ask:ro
+    note: "Everything else — ask first"
