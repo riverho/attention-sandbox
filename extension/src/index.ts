@@ -222,7 +222,74 @@ function formatAgentContext(map: FolderMap): string {
   ].join("\n");
 }
 
-// ── Extension Factory ──────────────────────────────────────────────────────
+// ── Auto-Init for New Folders ─────────────────────────────────────────────
+
+function detectProjectRoot(startDir: string): string | null {
+  let current = startDir;
+  const markers = [".git", ".wenmei", "package.json", "pyproject.toml", "Cargo.toml", "go.mod"];
+  
+  while (current !== path.dirname(current)) {
+    for (const marker of markers) {
+      if (fs.existsSync(path.join(current, marker))) {
+        return current;
+      }
+    }
+    current = path.dirname(current);
+  }
+  return null;
+}
+
+function autoInitMap(cwd: string, map: FolderMap): { created: boolean; projectRoot: string | null } {
+  const projectRoot = detectProjectRoot(cwd);
+  const root = projectRoot || cwd;
+  
+  // Project root = allow:rw
+  map.addRule(root, "allow:rw", projectRoot ? "Project root (auto-detected)" : "Current directory");
+  
+  // Common project subdirectories
+  if (projectRoot) {
+    // Dependencies: deny by default
+    const depsDirs = ["node_modules", ".venv", "venv", "vendor", "target/debug", "target/release"];
+    for (const d of depsDirs) {
+      const depPath = path.join(root, d);
+      if (fs.existsSync(depPath)) {
+        map.addRule(depPath, "deny", "Dependencies — do not modify");
+      }
+    }
+    
+    // .git: read-only
+    const gitPath = path.join(root, ".git");
+    if (fs.existsSync(gitPath)) {
+      map.addRule(gitPath, "allow:ro", "Git history read-only");
+    }
+  }
+  
+  // Parent workspace: read-only (if different from root)
+  const parent = path.dirname(root);
+  if (parent !== root && parent !== "/") {
+    map.addRule(parent, "allow:ro", "Parent workspace read-only");
+  }
+  
+  // Global deny
+  map.addRule("/", "deny", "Outside sandbox (default)");
+  
+  // Save to .pi/sandbox-map.yaml
+  const piDir = path.join(cwd, ".pi");
+  const mapFile = path.join(piDir, "sandbox-map.yaml");
+  
+  try {
+    fs.mkdirSync(piDir, { recursive: true });
+    const mapData = { map: {} as Record<string, { perm: Permission; note?: string }> };
+    for (const rule of (map as any).rules) {
+      mapData.map[rule.path] = { perm: rule.perm, note: rule.note };
+    }
+    fs.writeFileSync(mapFile, yaml.dump(mapData), "utf-8");
+    (map as any).mapFile = mapFile;
+    return { created: true, projectRoot };
+  } catch {
+    return { created: false, projectRoot };
+  }
+}
 
 function createSandboxExtension(pi: any) {
   const cwd = pi.cwd || process.cwd();
@@ -237,6 +304,9 @@ function createSandboxExtension(pi: any) {
   ];
 
   let mapLoaded = false;
+  let autoCreated = false;
+  let projectRoot: string | null = null;
+
   for (const mp of mapPaths) {
     if (map.loadFromYaml(mp)) {
       mapLoaded = true;
@@ -245,11 +315,20 @@ function createSandboxExtension(pi: any) {
   }
 
   if (!mapLoaded) {
-    map.addRule(cwd, "allow:rw", "Current working directory");
-    map.addRule("/", "deny", "Outside sandbox");
+    // Auto-init for new folders without metadata
+    const init = autoInitMap(cwd, map);
+    autoCreated = init.created;
+    projectRoot = init.projectRoot;
   }
 
-  console.log(`[sandbox] Map loaded (${mapLoaded ? "from file" : "default"}):`);
+  const mode = mapLoaded ? "loaded from file" : autoCreated ? "auto-created" : "default";
+  console.log(`[sandbox] Map ${mode}:`);
+  if (projectRoot && projectRoot !== cwd) {
+    console.log(`[sandbox] Project root detected: ${projectRoot}`);
+  }
+  if (autoCreated) {
+    console.log(`[sandbox] Created .pi/sandbox-map.yaml — edit it or use !MAP to customize`);
+  }
   console.log(map.toSummary());
 
   // ── Inject Agent Context ──────────────────────────────────────────────

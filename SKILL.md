@@ -1,6 +1,6 @@
 ---
 name: attention-sandbox
-description: Logical filesystem sandbox for agentic Pi with !MAP-based permission control. Enables folder-centric workspace isolation without physical chroot or containers. When the agent operates inside the map, it flows freely. When it reaches outside mapped boundaries or hits an ask rule, the sandbox pauses and requests Human-in-the-Loop (HIL) approval. Use when working with sensitive files, multi-project sessions, or when you want contextual security boundaries that follow the agent rather than caging it.
+description: Minimal folder sandbox for Pi with !MAP-based permission control. Auto-detects project boundaries and creates `.pi/sandbox-map.yaml` in new folders. Stops agent from accessing unmapped paths with a friendly note explaining how to expand. Agent-first design teaches the agent to ask before hitting walls. Use when working across multiple directories, handling sensitive files, or keeping agents within project boundaries.
 license: MIT
 metadata:
   version: "1.0.0"

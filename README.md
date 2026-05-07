@@ -62,6 +62,38 @@ ln -s $(pwd)/.pi/agents.md /your/project/.pi/agents.md
 
 ---
 
+## Auto-Init for New Folders
+
+When you `cd` into a folder **without** `.pi/sandbox-map.yaml`, the extension auto-detects and creates one:
+
+### Detected as Project
+
+Finds `.git`, `.wenmei`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`:
+
+```
+[sandbox] Map auto-created:
+[sandbox] Created .pi/sandbox-map.yaml
+🟢 ~/my-project -> allow:rw (Project root (auto-detected))
+🟡 ~/my-project/.git -> allow:ro (Git history read-only)
+🔴 ~/my-project/node_modules -> deny (Dependencies)
+🟡 ~ -> allow:ro (Parent workspace read-only)
+🔴 / -> deny (Outside sandbox)
+```
+
+### Detected as Plain Folder
+
+```
+[sandbox] Map auto-created:
+[sandbox] Created .pi/sandbox-map.yaml
+🟢 ~/some-folder -> allow:rw (Current directory)
+🟡 ~ -> allow:ro (Parent workspace read-only)
+🔴 / -> deny (Outside sandbox)
+```
+
+The `.pi/sandbox-map.yaml` is written to disk immediately. Edit it anytime, or use `!MAP` commands.
+
+---
+
 ## User Commands
 
 Type these in Pi chat:
