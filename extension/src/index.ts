@@ -179,28 +179,61 @@ function extractPaths(toolName: string, args: Record<string, unknown>): Array<{ 
 
 // ── Error Formatting ───────────────────────────────────────────────────────
 
-function formatStopError(toolName: string, blockedPath: string, map: FolderMap): string {
+function formatMultiStopError(
+  toolName: string,
+  violations: Array<{ path: string; reason: "outside-map" | "deny"; rule?: MapRule }>,
+  map: FolderMap
+): string {
   const mapped = map.getAllowPaths();
-  const mappedList = mapped.length > 0 
-    ? mapped.join("\n    ") 
-    : "(none configured)";
+  const mappedList = mapped.length > 0
+    ? mapped.map(p => `  • ${p}`).join("\n")
+    : "  (none configured)";
 
-  return [
+  const outside = violations.filter(v => v.reason === "outside-map");
+  const denied = violations.filter(v => v.reason === "deny");
+
+  const lines = [
     "",
     "🔒 SANDBOX STOP",
     "",
-    `The agent tried to ${toolName} outside the mapped sandbox:`,
-    `  ${blockedPath}`,
+    `The agent tried to **${toolName}** on ${violations.length} path(s) outside the sandbox:`,
+    ...violations.map(v => {
+      if (v.reason === "outside-map") return `  • ${v.path}  (not in map)`;
+      return `  • ${v.path}  (denied: ${v.rule?.note || "blocked"})`;
+    }),
     "",
     "Currently allowed paths:",
-    `    ${mappedList}`,
+    mappedList,
     "",
-    "To expand the sandbox:",
-    `  !MAP ${blockedPath} -> allow:rw`,
-    "",
-    "Or ask the user: \"Should I add ${blockedPath} to the sandbox?\"",
-    "",
-  ].join("\n");
+  ];
+
+  if (outside.length > 0) {
+    if (outside.length === 1) {
+      lines.push("To expand the sandbox:");
+      lines.push(`  !MAP ${outside[0].path} -> allow:rw`);
+      lines.push("");
+      lines.push(`Or ask: "Should I add ${outside[0].path} to the sandbox?"`);
+    } else {
+      lines.push("To expand the sandbox, add the paths you want to allow:");
+      for (const v of outside) {
+        lines.push(`  !MAP ${v.path} -> allow:rw`);
+      }
+      lines.push("");
+      const allPaths = outside.map(v => v.path).join(", ");
+      lines.push(`Or ask: "Should I add these paths to the sandbox: ${allPaths}?"`);
+    }
+  }
+
+  if (denied.length > 0) {
+    lines.push("");
+    lines.push("⚠️ Some paths are permanently denied and cannot be added:");
+    for (const v of denied) {
+      lines.push(`  • ${v.path} (${v.rule?.note || "deny rule"})`);
+    }
+  }
+
+  lines.push("");
+  return lines.join("\n");
 }
 
 function formatAgentContext(map: FolderMap): string {
@@ -487,82 +520,73 @@ function createSandboxExtension(pi: any) {
     const paths = extractPaths(toolName, args);
     if (paths.length === 0) return;
 
+    // First pass: check ALL paths and collect violations
+    const violations: Array<{ path: string; reason: "outside-map" | "deny"; rule?: MapRule }> = [];
+
     for (const { path: p, op } of paths) {
       const rule = map.check(p, op);
-      
       if (!rule) {
-        // OUTSIDE MAP — Stop
-        const errorMsg = formatStopError(toolName, p, map);
-        
-        pi.sendMessage({
-          type: "tool_result",
-          toolCallId: event.toolCallId,
-          content: errorMsg,
-          isError: true,
-        });
+        violations.push({ path: p, reason: "outside-map" });
+      } else if (rule.perm === "deny") {
+        violations.push({ path: p, reason: "deny", rule });
+      }
+      // allow:* and ask:* pass silently
+    }
 
-        // Notify user — always show in chat, fallback if pi.notify unavailable
-        const notifyMsg = `🔒 **Sandbox Stop**: agent tried **${toolName}** on \`${p}\`\n\nUse \`!MAP ${p} -> allow:rw\` to grant access, or \`!STATUS\` to see current map.`;
-        
-        if (pi.notify) {
-          pi.notify(`🔒 Stopped: ${toolName} on ${p}`);
-        }
-        
-        pi.sendMessage({
-          type: "text",
-          content: notifyMsg,
-        });
+    if (violations.length > 0) {
+      // Block and show summary of ALL violations
+      const errorMsg = formatMultiStopError(toolName, violations, map);
 
-        // Log to .wenmei/journal
-        try {
-          const journalDir = path.join(cwd, ".wenmei");
-          if (fs.existsSync(journalDir)) {
-            const journalPath = path.join(journalDir, "journal.jsonl");
+      pi.sendMessage({
+        type: "tool_result",
+        toolCallId: event.toolCallId,
+        content: errorMsg,
+        isError: true,
+      });
+
+      // Notification with summary
+      const outsideCount = violations.filter(v => v.reason === "outside-map").length;
+      const denyCount = violations.filter(v => v.reason === "deny").length;
+      const parts: string[] = [];
+      if (outsideCount > 0) parts.push(`${outsideCount} outside map`);
+      if (denyCount > 0) parts.push(`${denyCount} denied`);
+
+      const notifyMsg = `🔒 **Sandbox Stop**: agent tried **${toolName}** — ${parts.join(", ")}`;
+
+      if (pi.notify) {
+        pi.notify(`🔒 Stopped: ${toolName} (${violations.length} path${violations.length > 1 ? "s" : ""})`);
+      }
+
+      pi.sendMessage({
+        type: "text",
+        content: notifyMsg,
+      });
+
+      // Log to .wenmei/journal
+      try {
+        const journalDir = path.join(cwd, ".wenmei");
+        if (fs.existsSync(journalDir)) {
+          const journalPath = path.join(journalDir, "journal.jsonl");
+          for (const v of violations) {
             const entry = JSON.stringify({
               ts: new Date().toISOString(),
               kind: "sandbox.stop",
               tool: toolName,
-              path: p,
-              reason: "outside-map",
+              path: v.path,
+              reason: v.reason,
             }) + "\n";
             fs.appendFileSync(journalPath, entry);
           }
-        } catch {
-          // Best effort
         }
-
-        return;
+      } catch {
+        // Best effort
       }
 
-      if (rule.perm === "deny") {
-        // EXPLICIT DENY
-        const errorMsg = [
-          "",
-          "🚫 SANDBOX DENIED",
-          "",
-          `Path ${p} is explicitly denied:`,
-          `  ${rule.path} -> deny`,
-          rule.note ? `  (${rule.note})` : "",
-          "",
-          "This path is permanently blocked. Use a different path.",
-          "",
-        ].join("\n");
-
-        pi.sendMessage({
-          type: "tool_result",
-          toolCallId: event.toolCallId,
-          content: errorMsg,
-          isError: true,
-        });
-        return;
-      }
-
-      // allow:* -> proceed silently
-      // ask:* -> log but allow (user can review later)
-      if (rule.perm.startsWith("ask")) {
-        console.log(`[sandbox] ASK logged: ${toolName} on ${p} (${rule.note})`);
-      }
+      return;
     }
+
+    // All paths allowed — proceed silently
+    // ask:* paths were already logged above, now we pass through
   });
 }
 
