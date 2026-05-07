@@ -123,13 +123,16 @@ class FolderMap {
   }
 
   toSummary(): string {
-    return this.rules.map(r => {
-      const icon = r.perm.startsWith("allow:rw") ? "🟢" 
-        : r.perm.startsWith("allow:ro") ? "🟡"
-        : r.perm === "deny" ? "🔴"
-        : "🔵";
-      return `${icon} ${r.path} -> ${r.perm}${r.note ? ` (${r.note})` : ""}`;
-    }).join("\n");
+    const systemNotes = ["Pi system files", "Pi CLI", "Pi user config", "Common CLI tools", "System utilities", "Core system binaries", "Homebrew binaries", "Homebrew packages", "Global node modules"];
+    return this.rules
+      .filter(r => r.note && !systemNotes.some(sn => r.note?.includes(sn)))
+      .map(r => {
+        const icon = r.perm.startsWith("allow:rw") ? "🟢" 
+          : r.perm.startsWith("allow:ro") ? "🟡"
+          : r.perm === "deny" ? "🔴"
+          : "🔵";
+        return `${icon} ${r.path} -> ${r.perm}${r.note ? ` (${r.note})` : ""}`;
+      }).join("\n");
   }
 
   save(): boolean {
@@ -222,7 +225,41 @@ function formatAgentContext(map: FolderMap): string {
   ].join("\n");
 }
 
-// ── Auto-Init for New Folders ─────────────────────────────────────────────
+// ── Always-Allowed System Paths ───────────────────────────────────────────
+// These are essential for Pi to function and common agent workflows.
+// They bypass normal map checking and are always permitted.
+
+const ALWAYS_ALLOW_PATHS: Array<{ path: string; perm: "allow:rw" | "allow:ro"; note: string }> = [
+  // Pi's own installation and config
+  { path: "/usr/local/lib/node_modules/@mariozechner/pi-coding-agent", perm: "allow:ro", note: "Pi system files" },
+  { path: "/usr/local/bin/pi", perm: "allow:ro", note: "Pi CLI" },
+  
+  // User's global Pi config
+  { path: "~/.pi", perm: "allow:rw", note: "Pi user config and extensions" },
+  
+  // Common system utilities agents need
+  { path: "/usr/local/bin", perm: "allow:ro", note: "Common CLI tools" },
+  { path: "/usr/bin", perm: "allow:ro", note: "System utilities" },
+  { path: "/bin", perm: "allow:ro", note: "Core system binaries" },
+  
+  // Homebrew on macOS (common tool source)
+  { path: "/opt/homebrew/bin", perm: "allow:ro", note: "Homebrew binaries" },
+  { path: "/opt/homebrew/opt", perm: "allow:ro", note: "Homebrew packages" },
+  
+  // Node/npm binaries (agents often run npm scripts)
+  { path: "/usr/local/lib/node_modules", perm: "allow:ro", note: "Global node modules" },
+];
+
+function addAlwaysAllowedPaths(map: FolderMap, cwd: string): void {
+  for (const { path: rawPath, perm, note } of ALWAYS_ALLOW_PATHS) {
+    const resolved = normalizePath(rawPath, cwd);
+    // Only add if the path actually exists on this system
+    if (fs.existsSync(resolved)) {
+      // Use addRule but mark as system so it doesn't show in user-facing summaries
+      map.addRule(resolved, perm, note);
+    }
+  }
+}
 
 function detectProjectRoot(startDir: string): string | null {
   let current = startDir;
@@ -322,6 +359,9 @@ function createSandboxExtension(pi: any) {
   }
 
   const mode = mapLoaded ? "loaded from file" : autoCreated ? "auto-created" : "default";
+  
+  // Add always-allowed system paths (Pi, common tools)
+  addAlwaysAllowedPaths(map, cwd);
   
   // Build startup notification
   const startupLines = [
