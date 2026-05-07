@@ -1,6 +1,6 @@
 # Attention Sandbox 🛡️
 
-> **Minimal folder sandbox for Pi. A stopper, not a cage.**
+> **A folder sandbox for Pi that teaches the agent its boundaries — so it asks before it wanders.**
 
 When the agent tries to touch something outside the mapped folders, it gets a friendly **"here's what's blocked, here's how to fix it"** message. The agent learns its boundaries and works with them — no wasted tool calls, no hitting walls.
 
@@ -15,17 +15,74 @@ Agent (dumb): read ~/Desktop/  ❌ BLOCKED — waste of a turn
 
 ---
 
+## Why Use This?
+
+**Three reasons:**
+
+### 1. Agent-First Boundaries (No Wasted Turns)
+
+Most sandboxes just **block** and tell the user. This one **teaches the agent** so the agent plans around boundaries:
+
+- At startup, the agent sees its sandbox map in context
+- Before touching unknown paths, it checks `!STATUS` or asks you
+- When blocked, it adapts instead of retrying blindly
+
+**Result:** Fewer wasted tool calls, fewer confusing errors, smoother sessions.
+
+### 2. Multi-Path Summary (See Everything At Once)
+
+When an agent command touches multiple paths, you see **all blocked paths in one message** — not one error per path:
+
+```
+🔒 SANDBOX STOP
+
+The agent tried bash on 3 paths outside the sandbox:
+  • ~/Desktop        (not in map)
+  • ~/Downloads      (not in map)
+  • /etc/passwd     (denied: default deny)
+
+Currently allowed:
+  • ~/projects/my-app
+  • ~/work/shared
+
+To expand:
+  !MAP ~/Desktop -> allow:rw
+  !MAP ~/Downloads -> allow:rw
+
+Or ask: "Should I add these to the sandbox: ~/Desktop, ~/Downloads?"
+```
+
+**Result:** You decide once, add multiple paths, agent continues.
+
+### 3. Auto-Init (Zero Config)
+
+Drop into any folder — the sandbox auto-detects the project and creates `.pi/sandbox-map.yaml`:
+
+| What It Finds | What It Maps |
+|---------------|-------------|
+| `.git`, `package.json`, etc. | Project root = `allow:rw` |
+| `node_modules/`, `.venv/` | Dependencies = `deny` (don't touch) |
+| `.git/` | Git history = `allow:ro` |
+| Parent directory | Read-only (peek but don't touch) |
+| Everything else | Denied by default |
+
+**Result:** Open any project, sandbox is ready in seconds. No manual setup.
+
+---
+
 ## The Problem This Solves
 
 Pi gives agents powerful tools (`read`, `bash`, `edit`, `write`). Without boundaries, agents wander into:
+
 - `~/.ssh/` — your private keys
-- `~/Desktop/` — your personal files  
+- `~/Desktop/` — your personal files
 - `/etc/passwd` — system files
 - Other project directories — cross-contamination
+- Dependency folders — modifying `node_modules`
 
-**Without a sandbox:** Agent tries, fails, retries, wastes tokens, confuses user.
+**Without a sandbox:** Agent tries, fails, retries, wastes tokens, confuses you.
 
-**With this sandbox:** Agent knows boundaries, asks before crossing, user stays in control.
+**With this sandbox:** Agent knows boundaries, asks before crossing, you stay in control.
 
 ---
 
@@ -39,6 +96,7 @@ Most sandboxes are **user-centric** — they just block and notify the user. Thi
 2. **Proactive behavior**: The agent checks `!STATUS` before trying unknown paths
 3. **Conversational expansion**: The agent asks the user to add paths, rather than hitting walls
 4. **Clear error messages**: If blocked, the agent knows exactly why and can adapt
+5. **Bulk suggestions**: When multiple paths are blocked, all are shown with `!MAP` commands ready
 
 ---
 
@@ -49,48 +107,11 @@ Most sandboxes are **user-centric** — they just block and notify the user. Thi
 cd /path/to/attention-sandbox
 ln -s $(pwd)/extension ~/.pi/agent/extensions/attention-sandbox
 
-# 2. Add map to your project
-mkdir -p /your/project/.pi
-cp .pi/sandbox-map.yaml /your/project/.pi/sandbox-map.yaml
-
-# 3. (Optional) Add agent instructions
-ln -s $(pwd)/.pi/agents.md /your/project/.pi/agents.md
-
-# 4. Reload Pi
+# 2. Reload Pi
 /reload
 ```
 
----
-
-## Auto-Init for New Folders
-
-When you `cd` into a folder **without** `.pi/sandbox-map.yaml`, the extension auto-detects and creates one:
-
-### Detected as Project
-
-Finds `.git`, `.wenmei`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`:
-
-```
-[sandbox] Map auto-created:
-[sandbox] Created .pi/sandbox-map.yaml
-🟢 ~/my-project -> allow:rw (Project root (auto-detected))
-🟡 ~/my-project/.git -> allow:ro (Git history read-only)
-🔴 ~/my-project/node_modules -> deny (Dependencies)
-🟡 ~ -> allow:ro (Parent workspace read-only)
-🔴 / -> deny (Outside sandbox)
-```
-
-### Detected as Plain Folder
-
-```
-[sandbox] Map auto-created:
-[sandbox] Created .pi/sandbox-map.yaml
-🟢 ~/some-folder -> allow:rw (Current directory)
-🟡 ~ -> allow:ro (Parent workspace read-only)
-🔴 / -> deny (Outside sandbox)
-```
-
-The `.pi/sandbox-map.yaml` is written to disk immediately. Edit it anytime, or use `!MAP` commands.
+That's it. The extension auto-detects your project and creates `.pi/sandbox-map.yaml`.
 
 ---
 
@@ -192,28 +213,31 @@ Agent: read ~/Downloads/
        (wasted tool call, user confused)
 ```
 
-### When Blocked
+### When Blocked (Multi-Path)
 
-If the agent hits a wall:
+If the agent hits multiple walls at once:
 
 ```
 🔒 SANDBOX STOP
 
-The agent tried to read outside the mapped sandbox:
-  ~/Desktop/secret.txt
+The agent tried to bash on 3 path(s) outside the sandbox:
+  • ~/Desktop        (not in map)
+  • ~/Downloads      (not in map)
+  • /etc/passwd     (denied: default deny)
 
 Currently allowed paths:
     ~/projects/attention-sandbox
     ~/work/shared
 
-To expand the sandbox:
+To expand the sandbox, add the paths you want to allow:
   !MAP ~/Desktop -> allow:rw
+  !MAP ~/Downloads -> allow:rw
 
-Or ask the user: "Should I add ~/Desktop to the sandbox?"
+Or ask: "Should I add these paths to the sandbox: ~/Desktop, ~/Downloads?"
 ```
 
 The agent reads this, adapts, and either:
-- Asks the user to expand
+- Asks you to expand (you can approve multiple at once)
 - Finds an alternative within mapped paths
 
 ---
@@ -227,6 +251,38 @@ The agent reads this, adapts, and either:
 | `ask:rw` | 🔵 | ✅ | ✅ | Allowed, logged for review |
 | `ask:ro` | 🔵 | ✅ | ❌ | Read-only, logged |
 | `deny` | 🔴 | ❌ | ❌ | Never touch |
+
+---
+
+## Auto-Init for New Folders
+
+When you `cd` into a folder **without** `.pi/sandbox-map.yaml`, the extension auto-detects and creates one:
+
+### Detected as Project
+
+Finds `.git`, `.wenmei`, `package.json`, `pyproject.toml`, `Cargo.toml`, `go.mod`:
+
+```
+[sandbox] Map auto-created:
+[sandbox] Created .pi/sandbox-map.yaml
+🟢 ~/my-project -> allow:rw (Project root (auto-detected))
+🟡 ~/my-project/.git -> allow:ro (Git history read-only)
+🔴 ~/my-project/node_modules -> deny (Dependencies)
+🟡 ~ -> allow:ro (Parent workspace read-only)
+🔴 / -> deny (Outside sandbox)
+```
+
+### Detected as Plain Folder
+
+```
+[sandbox] Map auto-created:
+[sandbox] Created .pi/sandbox-map.yaml
+🟢 ~/some-folder -> allow:rw (Current directory)
+🟡 ~ -> allow:ro (Parent workspace read-only)
+🔴 / -> deny (Outside sandbox)
+```
+
+The `.pi/sandbox-map.yaml` is written to disk immediately. Edit it anytime, or use `!MAP` commands.
 
 ---
 
